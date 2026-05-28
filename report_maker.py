@@ -4,10 +4,13 @@ import pandas as pd
 import math
 import os
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
-HOST = ""
-USER = "user"
-PWD  = ""
+load_dotenv()
+
+HOST = os.getenv("BAIYUN_HOST")
+USER = os.getenv("BAIYUN_USER")
+PWD  = os.getenv("BAIYUN_PWD")
 
 CONVERSATIONS_DIR = "/root/BaiYun_Agent/logs/conversations/audit"
 CSV_PATH = "/home/user/results.csv"
