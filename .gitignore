@@ -7,3 +7,16 @@
 *.key
 *.pem
 secrets.json
+
+
+# 忽略所有 Excel 表格文件（防止误传账单或人员名单）
+*.xlsx
+*.xls
+*.csv
+
+# 忽略本地的 Markdown 报表草稿
+*.md
+
+# 忽略 Python 缓存
+__pycache__/
+*.pyc
