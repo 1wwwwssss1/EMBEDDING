@@ -5,9 +5,9 @@ import math
 import os
 from datetime import datetime, timedelta
 
-HOST = "8.135.23.169"
+HOST = ""
 USER = "user"
-PWD  = "baiyun56.com"
+PWD  = ""
 
 CONVERSATIONS_DIR = "/root/BaiYun_Agent/logs/conversations/audit"
 CSV_PATH = "/home/user/results.csv"
