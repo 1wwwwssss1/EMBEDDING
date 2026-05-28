@@ -20,3 +20,5 @@ secrets.json
 # 忽略 Python 缓存
 __pycache__/
 *.pyc
+
+1.py
