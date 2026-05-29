@@ -31,7 +31,7 @@ L1_MGR_MAP = {
     "品牌 market 部": "罗群勇",
     "人力行政部": "姜宇",
     "财务部": "黄定",
-    "海外事业部": "—"
+    "海外事业部": "无"
 }
 
 # ========== 部门统计大盘全局容器 ==========
@@ -138,38 +138,38 @@ def parse_audit_line_multi(line: str, user_registry: dict, folder_user_id: str):
     
     date_part = dt.strftime("%Y-%m-%d")
     date_md = dt.strftime("%m-%d")
-    
     msg_id = obj.get("message_id")
     if not msg_id: return []
 
-    # conversation_id 依然作为会话唯一去重标识
     conv_id = str(obj.get("conversation_id") or "").strip()
 
-    # 🌟 终极修正：优先用日志所在的“文件夹名”（手机号）去撞企微全局身份字典
-    if folder_user_id in user_registry:
-        name, dept_full, is_resigned = user_registry[folder_user_id]
-        # 🚨 强力拦截：如果花名册里标记了此人已离职，分子端直接斩断，不返回任何数据！
-        if is_resigned: 
-            return []
-    else:
-        # 兜底流（针对完全不在花名册的新人或测试账号）
-        log_name = obj.get("user_name")
-        name = str(log_name).strip() if log_name else folder_user_id
-        # 如果历史日志里的名字自带“离职”二字，也在此处予以斩断
-        if "离职" in name: 
-            return []
-            
-        log_dept = obj.get("user_department")
-        dept_full = str(log_dept).replace("[","").replace("]","").replace('"','').replace("'","").strip() if log_dept else "未知部门"
+    # --- 🌟 核心修改点：强制身份对齐 ---
+    # 1. 尝试匹配文件夹名(手机号)
+    # 2. 如果匹配不到，尝试匹配会话ID(缩写或手机号)
+    # 3. 彻底过滤掉匹配不到任何人的“随机哈希乱码”
+# 修改后的逻辑：只认 conv_id 是否在花名册的名单里
+    # 如果 conv_id 对应不上花名册里的任何一个人，直接扔掉这行日志，不进行任何后续处理
+    if conv_id not in user_registry:
+        return []
+
+    target_uid = conv_id
+    
+    # 强制检查离职状态
+    if user_registry[target_uid][2]:
+        return []
+        
+    # 强制检查部门（只有在花名册里登记的部门才被认可）
+    name, dept_full, _ = user_registry[target_uid]
+    # 这里不需要再去看日志里的部门了，直接用花名册里的
+
+
 
     tool_calls = obj.get("tool_calls") or []
     rows = []
     
-    # 提取工具调用行为
     for idx, tc in enumerate(tool_calls):
         tool_name = tc.get("tool_name", "")
         biz = None
-        
         if tool_name == "quote_tool": biz = "询价"
         elif tool_name == "waybill_tool": biz = "面单推送"
         elif tool_name == "tracking_tool": biz = "轨迹查询"
@@ -184,7 +184,8 @@ def parse_audit_line_multi(line: str, user_registry: dict, folder_user_id: str):
             rows.append({
                 "day_full": date_part,
                 "date_md": date_md,
-                "uid": conv_id,  
+                "uid": target_uid,      # 【标准化UID】解决统计重复
+                "raw_conv": conv_id,    # 【保留原始ID】用于溯源
                 "name": name,
                 "dept": dept_full,
                 "biz": biz,
@@ -197,7 +198,8 @@ def parse_audit_line_multi(line: str, user_registry: dict, folder_user_id: str):
         rows.append({
             "day_full": date_part,
             "date_md": date_md,
-            "uid": conv_id,
+            "uid": target_uid,
+            "raw_conv": conv_id,
             "name": name,
             "dept": dept_full,
             "biz": "闲聊",
@@ -272,7 +274,7 @@ def generate_multi_report():
         df['l1'] = df['dept'].apply(parse_clean_l1)
         df['l2'] = df['dept'].apply(parse_clean_l2)
         df['dept_short'] = df.apply(lambda r: f"{r['l1']}/{r['l2']}" if r['l2'] else r['l1'], axis=1)
-        df['mgr'] = df['l1'].apply(lambda l: L1_MGR_MAP.get(l, "—"))
+        df['mgr'] = df['l1'].apply(lambda l: L1_MGR_MAP.get(l, "无"))
 
         core_biz_list = ["询价", "面单推送", "轨迹查询", "转人工成功"]
         df_core = df[df['biz'].isin(core_biz_list)]
@@ -300,14 +302,14 @@ def generate_multi_report():
         total_calls = len(df_core)
         total_trial = df['uid'].nunique()
         avg_dau = math.ceil(sum(s['dau'] for s in daily_stats) / len(daily_stats))
-        today_handoff = len(df_core[(df_core['day_full'] == today_full_str) & (df_core['biz'] == '转人工成功')])
+        #today_handoff = len(df_core[(df_core['day_full'] == today_full_str) & (df_core['biz'] == '转人工成功')])
         active_rates = [(s['dau']/s['cum']) if s['cum']>0 else 0 for s in daily_stats]
         avg_active_rate = f"{round(sum(active_rates)/len(active_rates)*100,1)}%" if active_rates else "0%"
 
         # ==================== 渲染输出 Markdown 报告 ====================
         md = f"# 一、核心数据概览\n"
-        md += f"- 日均使用人数：{avg_dau}\n- 累计在职激活人数：{total_trial}\n- 功能调用总量：{total_calls}\n"
-        md += f"- 日均活跃率：{avg_active_rate}\n- 今日成功转人工次数：{today_handoff}\n\n"
+        md += f"- 日均使用人数：{avg_dau}\n- 累计试用人数：{total_trial}\n- 功能调用总量：{total_calls}\n"
+        md += f"- 日均活跃率：{avg_active_rate}\n"#- 今日成功转人工次数：{today_handoff}\n\n"
         md += "| 日期 | 日活跃用户 | 当日新增 | 累计人数 |\n| :--- | :--- | :--- | :--- |\n"
         for s in daily_stats:
             md += f"| {s['date_full']} | {s['dau']} | {s['new']} | {s['cum']} |\n"
@@ -329,7 +331,7 @@ def generate_multi_report():
             
             if l1_total_headcount == 0 and len(l1_df) == 0: continue
                 
-            mgr_str = L1_MGR_MAP.get(l1, "—")
+            mgr_str = L1_MGR_MAP.get(l1, "无")
             md += f"\n**{l1}：{l1_total_headcount}人**\n\n"
             all_l2 = DYNAMIC_L1_TO_L2.get(l1, [])
             
@@ -337,7 +339,7 @@ def generate_multi_report():
                 call_users = l1_df['uid'].nunique()
                 pct = f"{round(call_users/l1_total_headcount*100,1)}%" if l1_total_headcount else "-%"
                 md += "| 一级部门 | 负责人 | 二级部门 | 部门人数 | 调用功能人数 | 部门使用人数占比 |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n"
-                md += f"| {l1} | {mgr_str} | — | {l1_total_headcount} | {call_users} | {pct} |\n\n"
+                md += f"| {l1} | {mgr_str} | 无 | {l1_total_headcount} | {call_users} | {pct} |\n\n"
             else:
                 l2_counts = l1_df.groupby('l2').size()
                 l2_with = [l2 for l2 in l2_counts.index if l2 != ""]
@@ -351,17 +353,17 @@ def generate_multi_report():
                 other_head = l1_total_headcount - l2_total_headcount_sum
                 
                 if other_head > 0 or len(other_df) > 0:
-                    other_names = "、".join(other_df.drop_duplicates('uid')['name'].tolist()) if len(other_df) > 0 else "暂无调用"
                     o_users = other_df['uid'].nunique()
                     o_pct = f"{round(o_users/other_head*100,1)}%" if other_head > 0 else "-%"
-                    md += f"| {l1} | {mgr_str} | {mgr_str}（直属，{other_names}） | {max(other_head, 0)} | {o_users} | {o_pct} |\n"
+                    md += f"| {l1} | {mgr_str} | 无 | {max(other_head, 0)} | {o_users} | {o_pct} |\n"
                 
                 for l2 in l2_list:
                     l2_df = l1_df[l1_df['l2'] == l2]
                     head = DYNAMIC_L2_TOTAL.get(l2, 0)
                     u = l2_df['uid'].nunique()
                     pct = f"{round(u/head*100,1)}%" if head else "-%"
-                    md += f"| {l1} | {mgr_str} | {l2} | {head} | {u} | {pct} |\n"
+                    l2_display = l2 if l2 else "无"
+                    md += f"| {l1} | {mgr_str} | {l2_display} | {head} | {u} | {pct} |\n"
                 md += "\n"
 
         # 功能应用详情
@@ -380,8 +382,8 @@ def generate_multi_report():
             dt_s = s_df.groupby(['dept_short','mgr']).agg({'uid':'nunique','biz':'count'}).sort_values('biz',ascending=False).head(5)
             for (d,m),r in dt_s.iterrows():
                 md += f"| {d} | {m} | {r['uid']} | {r['biz']} |\n"
-            md += f"\n人员 TOP10\n| 姓名 | 负责人 | 次数 |\n| :--- | :--- | :--- |\n"
-            ut_s = s_df.groupby(['name','mgr']).size().sort_values(ascending=False).head(10)
+            md += f"\n人员 TOP5\n| 姓名 | 负责人 | 次数 |\n| :--- | :--- | :--- |\n"
+            ut_s = s_df.groupby(['name','mgr']).size().sort_values(ascending=False).head(5)
             for (n,m),cnt in ut_s.items():
                 md += f"| {n} | {m} | {cnt} |\n"
 
