@@ -6,19 +6,21 @@ import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
+# 加载环境变量（获取服务器连接凭证）
 load_dotenv()
 
 HOST = os.getenv("BAIYUN_HOST")
 USER = os.getenv("BAIYUN_USER")
 PWD  = os.getenv("BAIYUN_PWD")
 
+# 服务器日志审计根目录
 CONVERSATIONS_DIR = "/root/BaiYun_Agent/logs/conversations/audit"
-CSV_PATH = "/home/user/results.csv"
 
+# 本地报告输出路径与企业微信最新花名册路径
 LOCAL_REPORT = r"D:\yunxiaoxin\BaiYun_Final_Report_Multi.md"
 WECOM_CACHE_PATH = r"D:\yunxiaoxin\wecom_cache\wecom_users_latest.json"
 
-# ========== 部门负责人硬编码映射 ==========
+# ========== 一级部门负责人硬编码映射 ==========
 L1_MGR_MAP = {
     "平台中心": "杜震宇",
     "产品中心": "向启胜",
@@ -32,7 +34,7 @@ L1_MGR_MAP = {
     "海外事业部": "—"
 }
 
-# ========== 部门统计全局容器 ==========
+# ========== 部门统计大盘全局容器 ==========
 DYNAMIC_L1_TOTAL = {}     
 DYNAMIC_L2_TOTAL = {}     
 DYNAMIC_L1_TO_L2 = {}     
@@ -44,9 +46,12 @@ def get_l1_name(dept: str) -> str:
     if not parts: return "其他"
     return parts[1] if len(parts) >= 2 else (parts[0] if parts else "other")
 
+# ==============================================================================
+# 🧠 升级版花名册加载：将所有人录入身份库（包括离职人员），但对在职/离职进行分流打标
+# ==============================================================================
 def load_wecom_user_registry():
     global DYNAMIC_L1_TOTAL, DYNAMIC_L2_TOTAL, DYNAMIC_L1_TO_L2, DYNAMIC_L1_ORDER
-    user_registry = {}
+    user_registry = {}  # 存放 账号/手机号 -> [姓名, 完整部门路径, 是否离职] 的映射
     
     if not os.path.exists(WECOM_CACHE_PATH):
         print(f"⚠️ 警告：未找到企微本地缓存 {WECOM_CACHE_PATH}")
@@ -63,26 +68,36 @@ def load_wecom_user_registry():
             user_list = data.get("list", [])
             for u in user_list:
                 name = u.get("name", "").strip()
-                uid = u.get("wecomUserId", "").strip()
+                uid = str(u.get("wecomUserId", "")).strip()  # 员工的唯一账号/手机号
                 
-                if "离职" in name: continue
                 if not uid: continue
-                    
-                user_registry[uid] = name
-
+                
+                # 🌟 关键诊断：判断此人是否属于离职人员
+                is_resigned = "离职" in name
+                
                 dept_paths = u.get("departmentNames", [])
-                if not dept_paths: continue
+                primary_path = dept_paths[0] if dept_paths else "默认部门"
+                
+                # 无论是否离职，全部放入大身份库中登记，打上离职标签 (True/False)
+                user_registry[uid] = [name, primary_path, is_resigned]
+
+                # 🛑 阻断：只有【在职】人员，才有资格参与分母大盘的统计！
+                if is_resigned: 
+                    continue
                     
-                primary_path = dept_paths[0]
-                # 兼容处理企微层级解析
+                if not dept_paths: 
+                    continue
+                    
+                # 基础花名册层面过滤技术支持部参与大盘分母编制
                 parts = [p.strip() for p in primary_path.split("/") if p.strip()]
-                if not parts: continue
+                if not parts: 
+                    continue
                 
                 l1 = parts[0]
                 l2 = parts[1] if len(parts) >= 2 else ""
 
-                # 基础花名册层面过滤技术支持部参与大盘分母编制
-                if "技术支持部" in l1: continue
+                if "技术支持部" in l1: 
+                    continue
 
                 if l1 not in l1_counter:
                     l1_counter[l1] = 0
@@ -98,33 +113,17 @@ def load_wecom_user_registry():
             DYNAMIC_L2_TOTAL = l2_counter
             DYNAMIC_L1_TO_L2 = {k: sorted(list(v)) for k, v in l1_to_l2_rel.items()}
             DYNAMIC_L1_ORDER = observed_l1_order
+            print(f"✅ 成功加载企微全局身份库。在职大盘总分母数已对齐。")
             
         except Exception as e:
             print(f"❌ 解析企微缓存失败: {e}")
             
     return user_registry
 
-def load_user_map_from_csv(ssh):
-    sftp = ssh.open_sftp()
-    try:
-        with sftp.open(CSV_PATH, "r") as f:
-            df = pd.read_csv(f)
-    except Exception as e:
-        print(f"❌ 读取运小星CSV文件失败: {e}")
-        return {}
-        
-    user_map = {}
-    for _, row in df.iterrows():
-        uid = str(row.get("user_id", "")).strip()
-        name = str(row.get("name", uid)).strip()
-        dept = str(row.get("department") or "默认部门").strip()
-        
-        l1 = get_l1_name(dept)
-        mgr = L1_MGR_MAP.get(l1, "—")
-        user_map[uid] = [name, dept, mgr]
-    return user_map
-
-def parse_audit_line_multi(line: str, user_map: dict, user_registry: dict):
+# ==============================================================================
+# 🪵 解析审计日志行（精准打击、拦截离职人员产生的历史日志分子）
+# ==============================================================================
+def parse_audit_line_multi(line: str, user_registry: dict, folder_user_id: str):
     try:
         obj = json.loads(line)
     except:
@@ -143,30 +142,30 @@ def parse_audit_line_multi(line: str, user_map: dict, user_registry: dict):
     msg_id = obj.get("message_id")
     if not msg_id: return []
 
-    uid = str(obj.get("conversation_id") or "").strip()
-    log_name = obj.get("user_name")
-    log_dept = obj.get("user_department")
+    # conversation_id 依然作为会话唯一去重标识
+    conv_id = str(obj.get("conversation_id") or "").strip()
 
-    if log_dept:
-        dept_full = str(log_dept).replace("[","").replace("]","").replace('"','').replace("'","").strip()
+    # 🌟 终极修正：优先用日志所在的“文件夹名”（手机号）去撞企微全局身份字典
+    if folder_user_id in user_registry:
+        name, dept_full, is_resigned = user_registry[folder_user_id]
+        # 🚨 强力拦截：如果花名册里标记了此人已离职，分子端直接斩断，不返回任何数据！
+        if is_resigned: 
+            return []
     else:
-        dept_full = "默认部门"
-
-    l1 = get_l1_name(dept_full)
-    mgr = L1_MGR_MAP.get(l1, "—")
-
-    if uid and uid in user_map:
-        name, _, mgr = user_map[uid]
-    elif log_name:
-        name = str(log_name).strip()
-    else:
-        name = uid if uid else "unknown"
-
-    if "离职" in name: return []
+        # 兜底流（针对完全不在花名册的新人或测试账号）
+        log_name = obj.get("user_name")
+        name = str(log_name).strip() if log_name else folder_user_id
+        # 如果历史日志里的名字自带“离职”二字，也在此处予以斩断
+        if "离职" in name: 
+            return []
+            
+        log_dept = obj.get("user_department")
+        dept_full = str(log_dept).replace("[","").replace("]","").replace('"','').replace("'","").strip() if log_dept else "未知部门"
 
     tool_calls = obj.get("tool_calls") or []
     rows = []
     
+    # 提取工具调用行为
     for idx, tc in enumerate(tool_calls):
         tool_name = tc.get("tool_name", "")
         biz = None
@@ -185,19 +184,20 @@ def parse_audit_line_multi(line: str, user_map: dict, user_registry: dict):
             rows.append({
                 "day_full": date_part,
                 "date_md": date_md,
-                "uid": uid,
+                "uid": conv_id,  
                 "name": name,
                 "dept": dept_full,
                 "biz": biz,
                 "fingerprint": f"{msg_id}_{biz}_{idx}"
             })
     
+    # 提取闲聊行为
     intent = obj.get("intent", "")
     if intent == "闲聊" and not tool_calls:
         rows.append({
             "day_full": date_part,
             "date_md": date_md,
-            "uid": uid,
+            "uid": conv_id,
             "name": name,
             "dept": dept_full,
             "biz": "闲聊",
@@ -206,14 +206,17 @@ def parse_audit_line_multi(line: str, user_map: dict, user_registry: dict):
     
     return rows
 
+# ==============================================================================
+# 📊 报表生成主引擎
+# ==============================================================================
 def generate_multi_report():
+    # 1. 初始化身份注册大本营
     user_registry = load_wecom_user_registry()
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         ssh.connect(HOST, username=USER, password=PWD, timeout=20)
-        user_map = load_user_map_from_csv(ssh)
 
         start_date = datetime(2026, 4, 24)
         end_date = datetime.now()
@@ -221,27 +224,39 @@ def generate_multi_report():
 
         raw_rows = []
         current = start_date
+        
+        print("📂 正在连接白云服务器并行拉取日志，并基于手机号文件夹实现全量身份对账...")
         while current <= end_date:
             date_str = current.strftime("%Y-%m-%d")
-            cmd = f"find {CONVERSATIONS_DIR} -name '{date_str}.jsonl' -exec cat {{}} \\; 2>/dev/null"
+            
+            # 使用 Linux find 命令，在拉取每一行日志内容时同时带上其文件绝对路径
+            cmd = f"find {CONVERSATIONS_DIR} -name '{date_str}.jsonl' -exec grep -H '' {{}} \\; 2>/dev/null"
             _, stdout, _ = ssh.exec_command(cmd)
-            for line in stdout:
-                rows = parse_audit_line_multi(line, user_map, user_registry)
+            
+            for line_with_path in stdout:
+                if ":" not in line_with_path: continue
+                file_path, line_content = line_with_path.split(":", 1)
+                
+                # 完美切割路径，提取出当前行日志所属的手机号/账号文件夹名称
+                path_parts = file_path.split("/")
+                folder_user_id = path_parts[-2] if len(path_parts) >= 2 else ""
+                
+                rows = parse_audit_line_multi(line_content, user_registry, folder_user_id)
                 raw_rows.extend(rows)
+                
             current += timedelta(days=1)
 
         if not raw_rows:
-            print("⚠️ 未统计到任何有效行为日志")
+            print("⚠️ 未统计到任何非离职人员的有效行为日志。")
             return
 
         df = pd.DataFrame(raw_rows).drop_duplicates(subset=['fingerprint'])
 
         # ==========================================
-        # 🌟 核心解决：使用方法一，全词包含模糊匹配强行清洗过滤技术支持部
+        # 🌟 强力清洗阻断技术支持部
         # ==========================================
         df = df[~df['dept'].str.contains('技术支持部', na=False)]
 
-        # 重新统一清洗计算清洗后的一二级部门字段，防止索引错位导致脏数据展现
         def parse_clean_l1(d):
             parts = [p.strip() for p in d.split("/") if p.strip()]
             if not parts: return "其他"
@@ -289,7 +304,7 @@ def generate_multi_report():
         active_rates = [(s['dau']/s['cum']) if s['cum']>0 else 0 for s in daily_stats]
         avg_active_rate = f"{round(sum(active_rates)/len(active_rates)*100,1)}%" if active_rates else "0%"
 
-        # ==================== 渲染报告 ====================
+        # ==================== 渲染输出 Markdown 报告 ====================
         md = f"# 一、核心数据概览\n"
         md += f"- 日均使用人数：{avg_dau}\n- 累计在职激活人数：{total_trial}\n- 功能调用总量：{total_calls}\n"
         md += f"- 日均活跃率：{avg_active_rate}\n- 今日成功转人工次数：{today_handoff}\n\n"
@@ -376,10 +391,11 @@ def generate_multi_report():
             d_df_core = df_core[df_core['day_full'] == d_std]
             md += f"| {s['date_full']} | {d_df_core[d_df_core['biz']=='询价']['uid'].nunique()} | {d_df_core[d_df_core['biz']=='转人工成功']['uid'].nunique()} |\n"
 
+        # 写入本地大报告
         os.makedirs(os.path.dirname(LOCAL_REPORT), exist_ok=True)
         with open(LOCAL_REPORT, "w", encoding="utf-8") as f:
             f.write(md)
-        print(f"✅ 包含‘技术支持部’的脏数据已完成100%强力清洗阻断！新报告已保存至：{LOCAL_REPORT}")
+        print(f"🎉 完美闭环！全量在职数据对齐完毕。最终运营报告已生成至：{LOCAL_REPORT}")
 
     finally:
         ssh.close()
