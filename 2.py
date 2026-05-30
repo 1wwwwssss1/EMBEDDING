@@ -31,7 +31,7 @@ L1_MGR_MAP = {
     "品牌 market 部": "罗群勇",
     "人力行政部": "姜宇",
     "财务部": "黄定",
-    "海外事业部": "无"
+    "海外事业部": "—"
 }
 
 # ========== 部门统计大盘全局容器 ==========
@@ -274,7 +274,7 @@ def generate_multi_report():
         df['l1'] = df['dept'].apply(parse_clean_l1)
         df['l2'] = df['dept'].apply(parse_clean_l2)
         df['dept_short'] = df.apply(lambda r: f"{r['l1']}/{r['l2']}" if r['l2'] else r['l1'], axis=1)
-        df['mgr'] = df['l1'].apply(lambda l: L1_MGR_MAP.get(l, "无"))
+        df['mgr'] = df['l1'].apply(lambda l: L1_MGR_MAP.get(l, "—"))
 
         core_biz_list = ["询价", "面单推送", "轨迹查询", "转人工成功"]
         df_core = df[df['biz'].isin(core_biz_list)]
@@ -331,7 +331,7 @@ def generate_multi_report():
             
             if l1_total_headcount == 0 and len(l1_df) == 0: continue
                 
-            mgr_str = L1_MGR_MAP.get(l1, "无")
+            mgr_str = L1_MGR_MAP.get(l1, "—")
             md += f"\n**{l1}：{l1_total_headcount}人**\n\n"
             all_l2 = DYNAMIC_L1_TO_L2.get(l1, [])
             
@@ -339,7 +339,7 @@ def generate_multi_report():
                 call_users = l1_df['uid'].nunique()
                 pct = f"{round(call_users/l1_total_headcount*100,1)}%" if l1_total_headcount else "-%"
                 md += "| 一级部门 | 负责人 | 二级部门 | 部门人数 | 调用功能人数 | 部门使用人数占比 |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n"
-                md += f"| {l1} | {mgr_str} | 无 | {l1_total_headcount} | {call_users} | {pct} |\n\n"
+                md += f"| {l1} | {mgr_str} | — | {l1_total_headcount} | {call_users} | {pct} |\n\n"
             else:
                 l2_counts = l1_df.groupby('l2').size()
                 l2_with = [l2 for l2 in l2_counts.index if l2 != ""]
@@ -355,14 +355,14 @@ def generate_multi_report():
                 if other_head > 0 or len(other_df) > 0:
                     o_users = other_df['uid'].nunique()
                     o_pct = f"{round(o_users/other_head*100,1)}%" if other_head > 0 else "-%"
-                    md += f"| {l1} | {mgr_str} | 无 | {max(other_head, 0)} | {o_users} | {o_pct} |\n"
+                    md += f"| {l1} | {mgr_str} | — | {max(other_head, 0)} | {o_users} | {o_pct} |\n"
                 
                 for l2 in l2_list:
                     l2_df = l1_df[l1_df['l2'] == l2]
                     head = DYNAMIC_L2_TOTAL.get(l2, 0)
                     u = l2_df['uid'].nunique()
                     pct = f"{round(u/head*100,1)}%" if head else "-%"
-                    l2_display = l2 if l2 else "无"
+                    l2_display = l2 if l2 else "—"
                     md += f"| {l1} | {mgr_str} | {l2_display} | {head} | {u} | {pct} |\n"
                 md += "\n"
 
